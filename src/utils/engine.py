@@ -6,6 +6,7 @@ Eval functions used in main.py
 
 import torch
 import datetime
+from pathlib import Path
 
 from timm.utils import accuracy
 from utils.logger import MetricLogger
@@ -40,7 +41,10 @@ def evaluate(data_loader, model, device, amp_autocast):
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"./records/results_{current_time}.txt"
+    filename = Path("records") / f"results_{current_time}.txt"
+
+    filename.parent.mkdir(parents=True, exist_ok=True)
+
     with open(filename, "w") as file:
         file.write('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}\n'
                 .format(top1=metric_logger.acc1, 
