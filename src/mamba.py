@@ -9,8 +9,6 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from layers.ssm import SequentialSSM
 
-from mambalrp_utils import mambalrp_silu, mambalrp_multiplicative_gate
-
 class Mamba(nn.Module):
     def __init__(
         self,
@@ -106,8 +104,6 @@ class Mamba(nn.Module):
         self.D_b = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
         self.D_b._no_weight_decay = True
 
-        self.lrp_enabled = False
-
 
     def forward(self, hidden_states, inference_params=None):
         """
@@ -128,11 +124,7 @@ class Mamba(nn.Module):
         A = -torch.exp(self.A_log.float()) # d_inner,d_state = 384,16
 
         x = self.conv1d(x)[..., :seqlen] # B,d_inner,L = B,384,197
-        # x = self.act(x) # B,d_inner,L = B,384,197
-        if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-            x = mambalrp_silu(x)
-        else:
-            x = self.act(x) # B,d_inner,L = B,384,197
+        x = self.act(x) # B,d_inner,L = B,384,197
 
         x_dbl = self.x_proj(rearrange(x, "b d l -> (b l) d")) 
         dt, B, C = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
@@ -150,12 +142,7 @@ class Mamba(nn.Module):
 
         y = self.selective_scan(x, dt, A, B, C, D, direction='f') # B,d_inner,L = B,384,197
         if z is not None:
-            # y = y * self.act_z(z) # B,d_inner,L = B,384,197
-            if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-                gate_z = mambalrp_silu(z)
-                y = mambalrp_multiplicative_gate(y, gate_z)
-            else:
-                y = y * self.act_z(z) # B,d_inner,L = B,384,197
+            y = y * self.act_z(z) # B,d_inner,L = B,384,197
         y = rearrange(y, "b d l -> b l d") # B,L,d_inner = B,197,384
 
 
@@ -166,12 +153,7 @@ class Mamba(nn.Module):
         A_b = -torch.exp(self.A_b_log.float())
 
         x_b = self.conv1d_b(x_b)[..., :seqlen]
-        # x_b = self.act_b(x_b)
-        if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-            x_b = mambalrp_silu(x_b)
-        else:
-            x_b = self.act_b(x_b)
-
+        x_b = self.act_b(x_b)
         x_b_dbl = self.x_proj_b(rearrange(x_b, "b d l -> (b l) d"))
         dt_b, B_b, C_b = torch.split(x_b_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
 
@@ -185,12 +167,7 @@ class Mamba(nn.Module):
 
         y_b = self.selective_scan(x_b, dt_b, A_b, B_b, C_b, D_b, direction='b')
         if z_b is not None:
-            # y_b = y_b * self.act_z(z_b)
-            if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-                gate_z_b = mambalrp_silu(z_b)  
-                y_b = mambalrp_multiplicative_gate(y_b, gate_z_b)
-            else:
-                y_b = y_b * self.act_z(z_b)
+            y_b = y_b * self.act_z(z_b)
         y_b = rearrange(y_b, "b d l -> b l d")
 
 
@@ -212,16 +189,11 @@ class Mamba(nn.Module):
         # deltaA = delta_expanded * A_expanded # B,d_inner,L,d_state = B,384,197,16
         deltaA = self.hp(delta_expanded, A_expanded)
         deltaA = torch.exp(deltaA)
-        if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-            deltaA = deltaA.detach()
 
         # deltaB_x = torch.einsum('bdl,bnl,bdl->bdln', delta, B, x) # B,d_inner,L,d_state = B,384,197,16
         B_expanded = B.unsqueeze(1).permute(0, 1, 3, 2) # B,1,L,d_state = B,1,197,16
         x_expanded = x.unsqueeze(-1)
         deltaB = delta_expanded * B_expanded # B,d_inner,L,d_state = B,384,197,16
-        if hasattr(self, 'lrp_enabled') and self.lrp_enabled:
-            deltaB = deltaB.detach()
-            C = C.detach()
 
         D = D.unsqueeze(0)
 
@@ -231,13 +203,6 @@ class Mamba(nn.Module):
             out = self.ssm_b(x, deltaA, deltaB, C, D)
 
         return out
-    
-    def enable_lrp(self, enabled=True):
-        """Enable or disable MambaLRP mode"""
-        self.lrp_enabled = enabled
-        for module in self.modules():
-            if hasattr(module, 'lrp_enabled'):
-                module.lrp_enabled = enabled
     
 class HadamardProduct(nn.Module):
     def __init__(self):
